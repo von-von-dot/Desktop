@@ -1,0 +1,297 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover">
+<title>Lines — Mobile</title>
+<style>
+  :root{
+    --bg:#000; --ink:#eee; --panel:#0f0f0f; --soft:#222; --accent:#2dd4bf;
+    --touch:48px; --gap:10px; --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%;background:var(--bg);color:var(--ink);font-family:var(--font)}
+  /* Layout mobile-first */
+  #app{display:grid;grid-template-rows:auto 1fr auto;min-height:100vh}
+  header{position:sticky;top:0;z-index:5;display:flex;gap:8px;align-items:center;padding:8px; background:#0d0d0d;border-bottom:1px solid var(--soft)}
+  header h1{font-size:15px;margin:0;flex:1}
+  header .btn{height:var(--touch);padding:0 12px;background:#111;border:1px solid var(--soft);color:#fff;border-radius:10px}
+  header .btn.primary{border-color:#1f2937}
+  #stage{display:flex;align-items:center;justify-content:center;position:relative;background:#000;overflow:hidden}
+  canvas{max-width:100vw;max-height:calc(100vh - 140px);touch-action:none;background:#000}
+  /* Drawer for controls */
+  #drawerToggle{height:var(--touch);aspect-ratio:1;border-radius:12px}
+  #uiDrawer{position:fixed;left:0;right:0;bottom:0;z-index:40;background:var(--panel);max-height:70vh;border-top:1px solid var(--soft);border-radius:14px 14px 0 0;
+    transform:translateY(100%);transition:transform .25s ease;display:flex;flex-direction:column}
+  #uiDrawer.open{transform:translateY(0)}
+  #dragHandle{width:56px;height:6px;border-radius:6px;background:#333;margin:8px auto}
+  #ui{overflow:auto;padding:4px 12px 16px}
+  .row{display:grid;grid-template-columns:1fr;gap:6px;align-items:center;margin:10px 0}
+  .row label{font-size:13px;opacity:.9}
+  input[type=range]{width:100%}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+  .hint{font-size:12px;color:#b5b5b5;margin:4px 0}
+  .toolbar-bottom{display:flex;gap:10px;padding:8px;border-top:1px solid var(--soft);background:#0d0d0d}
+  .toolbar-bottom .btn{flex:1;height:var(--touch);border-radius:12px;background:#111;border:1px solid var(--soft);color:#fff}
+  .accent{color:var(--accent)}
+  @media (min-width: 800px){
+    /* On tablette/desktop : panneau latéral en colonne */
+    #app{grid-template-columns:340px 1fr;grid-template-rows:auto 1fr}
+    header{grid-column:1/-1}
+    #stage{grid-column:2}
+    #uiDrawer{position:static;transform:none;max-height:none;border-radius:0;border-left:1px solid var(--soft)}
+    .toolbar-bottom{display:none}
+  }
+</style>
+</head>
+<body>
+<div id="app">
+  <header>
+    <button id="drawerToggle" class="btn" aria-label="Paramètres">☰</button>
+    <h1>Lines — Mobile</h1>
+    <button id="btnStart" class="btn primary">Caméra</button>
+    <input id="file" type="file" accept="image/*" style="display:none">
+    <button id="btnLoad" class="btn">Image</button>
+  </header>
+
+  <main id="stage" role="main" aria-label="Aperçu"></main>
+
+  <div class="toolbar-bottom">
+    <button id="btnSave" class="btn">PNG</button>
+    <button id="btnSaveSVG" class="btn">SVG</button>
+  </div>
+
+  <aside id="uiDrawer" aria-label="Panneau de réglages">
+    <div id="dragHandle"></div>
+    <div id="ui">
+      <div class="row"><label>Contraste</label><input id="contrast" type="range" min="0" max="255" value="120"></div>
+      <div class="row"><label>Détail (pas)</label><input id="detail" type="range" min="1" max="12" value="3"></div>
+      <div class="row"><label>Taille</label><input id="size" type="range" min="1" max="40" value="8"></div>
+      <div class="row"><label>Densité</label><input id="density" type="range" min="0" max="1" step="0.01" value="1"></div>
+
+      <div class="row"><label>Mix RVB — Rouge</label><input id="wR" type="range" min="0" max="200" step="1" value="21"></div>
+      <div class="row"><label>Mix RVB — Vert</label><input id="wG" type="range" min="0" max="200" step="1" value="72"></div>
+      <div class="row"><label>Mix RVB — Bleu</label><input id="wB" type="range" min="0" max="200" step="1" value="7"></div>
+      <p class="hint">Le mix RVB pondère chaque canal avant conversion N&B. Par défaut ≈ Rec.709. Le total est normalisé automatiquement.</p>
+
+      <div class="grid2">
+        <button id="btnReset" class="btn">Réinitialiser</button>
+        <button id="btnHelp" class="btn">Aide</button>
+      </div>
+      <p id="warn" class="hint"></p>
+    </div>
+  </aside>
+</div>
+
+<script>
+let video=null, stream=null, img=null;
+let canvas, ctx, offSrc, offMask;
+const UI = {};
+const $ = id => document.getElementById(id);
+
+function fitCanvas(){
+  const DPR = Math.max(1, window.devicePixelRatio||1);
+  const headerH = document.querySelector('header').offsetHeight || 0;
+  const toolbarH = document.querySelector('.toolbar-bottom').offsetHeight || 0;
+  const w = Math.floor(window.innerWidth);
+  const h = Math.floor(window.innerHeight - headerH - toolbarH);
+  if (!canvas) return;
+  canvas.width = Math.floor(w*DPR);
+  canvas.height = Math.floor(Math.max(200, h)*DPR);
+  canvas.style.width = w+'px';
+  canvas.style.height = Math.max(200, h)+'px';
+  const ctxd = ctx;
+  if (ctxd) ctxd.setTransform(DPR,0,0,DPR,0,0);
+}
+
+async function startCamera(useEnv=true){
+  try{
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) throw new Error("getUserMedia indisponible");
+    if (stream){ stream.getTracks().forEach(t=>t.stop()); stream=null; }
+    stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: useEnv ? {ideal:'environment'} : {ideal:'user'} }, audio:false });
+    if (!video){
+      video = document.createElement('video');
+      video.setAttribute('playsinline','');
+      video.muted = true;
+    }
+    video.srcObject = stream;
+    await video.play();
+  }catch(e){
+    if (useEnv) return startCamera(false);
+    console.warn(e);
+    $('warn').textContent = "Caméra indisponible. Charge une image ou ouvre la page en HTTPS.";
+  }
+}
+
+function drawFrame(){
+  requestAnimationFrame(drawFrame);
+  if (!ctx) return;
+  ctx.fillStyle = '#000';
+  ctx.fillRect(0,0,canvas.width,canvas.height);
+
+  // préparer la source offscreen
+  const sw=360, sh=480; // plus léger pour mobile
+  offSrc.width=sw; offSrc.height=sh;
+  const octx = offSrc.getContext('2d');
+
+  if (video && video.readyState>=2){
+    // couvrir tout en conservant ratio
+    const vs = Math.max(sw/video.videoWidth, sh/video.videoHeight);
+    const w = Math.floor(video.videoWidth*vs), h=Math.floor(video.videoHeight*vs);
+    const x = Math.floor((sw-w)/2), y=Math.floor((sh-h)/2);
+    octx.drawImage(video,x,y,w,h);
+  }else if (img){
+    octx.clearRect(0,0,sw,sh);
+    const s = Math.min(sw/img.width, sh/img.height);
+    const w = Math.floor(img.width*s), h=Math.floor(img.height*s);
+    const x = Math.floor((sw-w)/2), y=Math.floor((sh-h)/2);
+    octx.drawImage(img,x,y,w,h);
+  }else{
+    // damier
+    octx.fillStyle='#000'; octx.fillRect(0,0,sw,sh);
+    for(let y=0;y<sh;y+=20){ for(let x=0;x<sw;x+=20){
+      octx.fillStyle = ((x/20+y/20)%2)?'#111':'#222';
+      octx.fillRect(x,y,20,20);
+    }}
+  }
+
+  // masque gris (luminance) avec mix RVB
+  offMask.width=sw; offMask.height=sh;
+  const mctx = offMask.getContext('2d');
+  mctx.drawImage(offSrc,0,0);
+  const imgd = mctx.getImageData(0,0,sw,sh);
+  const data = imgd.data;
+
+  const wr=parseFloat(UI.wR.value)||0, wg=parseFloat(UI.wG.value)||0, wb=parseFloat(UI.wB.value)||0;
+  const sum = (wr+wg+wb)||1;
+
+  for (let i=0;i<data.length;i+=4){
+    const r=data[i], g=data[i+1], b=data[i+2];
+    const y = Math.max(0, Math.min(255, ((r*wr + g*wg + b*wb)/sum)))|0;
+    data[i]=data[i+1]=data[i+2]=y; data[i+3]=255;
+  }
+  mctx.putImageData(imgd,0,0);
+
+  // paramètres
+  const contrast = parseInt(UI.contrast.value);
+  const step = Math.max(1, parseInt(UI.detail.value));
+  const sizeMax = parseFloat(UI.size.value);
+  const density = parseFloat(UI.density.value);
+
+  // rendu sur canvas principal
+  const s = Math.min(canvas.width/sw, canvas.height/sh);
+  const offX = Math.floor((canvas.width - sw*s)/2);
+  const offY = Math.floor((canvas.height - sh*s)/2);
+  ctx.save();
+  ctx.translate(offX, offY);
+  ctx.scale(s, s);
+
+  const mdat = mctx.getImageData(0,0,sw,sh).data;
+  ctx.fillStyle='#fff';
+  for (let x=1; x<sw-1; x+=step){
+    for (let y=1; y<sh-1; y+=step){
+      if (hash2D(x,y) > density) continue;
+      const idx = (x + y*sw)*4;
+      const br = mdat[idx]; // 0..255
+      if (br > contrast){
+        const sz = sizeMax * (0.3 + 0.7*(br/255));
+        ctx.beginPath();
+        ctx.arc(x, y, sz*0.5, 0, Math.PI*2);
+        ctx.fill();
+      }
+    }
+  }
+  ctx.restore();
+}
+
+function hash2D(x,y){
+  let n=(x|0)*374761393 + (y|0)*668265263; n=(n^(n>>>13))*1274126177; n=(n^(n>>>16))>>>0; return n/4294967295;
+}
+
+// init
+window.addEventListener('DOMContentLoaded', async ()=>{
+  ['contrast','detail','size','density','wR','wG','wB'].forEach(id=>UI[id]=$(id));
+
+  // UI wiring
+  $('drawerToggle').onclick = ()=> document.getElementById('uiDrawer').classList.toggle('open');
+  document.getElementById('dragHandle').addEventListener('click', ()=> document.getElementById('uiDrawer').classList.toggle('open'));
+  $('btnHelp').onclick = ()=> alert("Astuce :\n- Ouvre en HTTPS pour la caméra (iOS/Android)\n- Ajuste le mix RVB pour changer la matière du N&B\n- PNG = bitmap, SVG = vectoriel (modifiable).");
+  $('btnReset').onclick = ()=>{ UI.contrast.value=120; UI.detail.value=3; UI.size.value=8; UI.density.value=1; UI.wR.value=21; UI.wG.value=72; UI.wB.value=7; };
+
+  $('btnLoad').onclick = ()=> $('file').click();
+  $('file').onchange = (e)=>{
+    const f = e.target.files[0]; if (!f) return;
+    const url = URL.createObjectURL(f);
+    const im = new Image();
+    im.onload = ()=>{ img=im; URL.revokeObjectURL(url); };
+    im.src = url;
+  };
+
+  $('btnStart').onclick = async ()=>{ await startCamera(true); document.getElementById('uiDrawer').classList.remove('open'); };
+
+  $('btnSave').onclick = ()=>{
+    // Fallback iOS : open in new tab if download not supported
+    const dataUrl = canvas.toDataURL('image/png');
+    const a=document.createElement('a');
+    a.download = 'lines.png';
+    a.href = dataUrl;
+    if (typeof a.download === 'undefined'){ window.open(dataUrl, '_blank'); }
+    else { a.click(); }
+  };
+
+  $('btnSaveSVG').onclick = ()=>{
+    const sw=offMask.width, sh=offMask.height;
+    const mctx = offMask.getContext('2d');
+    const mdat = mctx.getImageData(0,0,sw,sh).data;
+
+    const contrast = parseInt(UI.contrast.value);
+    const step = Math.max(1, parseInt(UI.detail.value));
+    const sizeMax = parseFloat(UI.size.value);
+    const density = parseFloat(UI.density.value);
+
+    let parts = [];
+    parts.push(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${sw} ${sh}" width="${sw}" height="${sh}" fill="currentColor">`);
+    for (let x=1; x<sw-1; x+=step){
+      for (let y=1; y<sh-1; y+=step){
+        if (hash2D(x,y) > density) continue;
+        const idx=(x + y*sw)*4;
+        const br = mdat[idx];
+        if (br > contrast){
+          const sz = sizeMax * (0.3 + 0.7*(br/255));
+          const r = (sz*0.5).toFixed(2);
+          parts.push(`<circle cx="${x}" cy="${y}" r="${r}"/>`);
+        }
+      }
+    }
+    parts.push('</svg>');
+    const blob = new Blob([parts.join('')], {type:'image/svg+xml'});
+    const url = URL.createObjectURL(blob);
+    const a=document.createElement('a');
+    a.download='lines.svg';
+    a.href=url;
+    if (typeof a.download === 'undefined'){ window.open(url, '_blank'); }
+    else { a.click(); }
+    setTimeout(()=>URL.revokeObjectURL(url), 1500);
+  };
+
+  // HTTPS/camera hint
+  if (!(location.protocol==='https:' || location.hostname==='localhost' || location.hostname==='127.0.0.1')){
+    $('warn').innerHTML = '🔒 Pour la caméra sur mobile, ouvre ce fichier via <span class="accent">HTTPS</span> (ou localhost).';
+  }
+
+  // canvas & loop
+  canvas = document.createElement('canvas');
+  ctx = canvas.getContext('2d', {alpha:false});
+  document.getElementById('stage').appendChild(canvas);
+  offSrc = document.createElement('canvas');
+  offMask = document.createElement('canvas');
+  fitCanvas();
+  drawFrame();
+});
+
+window.addEventListener('resize', fitCanvas);
+window.addEventListener('orientationchange', ()=> setTimeout(fitCanvas, 200));
+
+</script>
+</body>
+</html>
